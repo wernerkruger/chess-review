@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PGN Game Review</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">♞ PGN Game Review</div>
+  <nav>
+    <button class="navbtn active" data-view="home">Upload</button>
+    <button class="navbtn" data-view="games" id="nav-games" disabled>Games</button>
+    <button class="navbtn" data-view="settings">Settings</button>
+  </nav>
+  <div class="engine-pill" id="engine-pill">engine: …</div>
+</header>
+
+<!-- ================================================================ HOME -->
+<section id="view-home" class="view">
+  <div class="card hero">
+    <h1>Review a PGN file, chess.com style</h1>
+    <p class="muted">Upload a PGN. Every game is analysed with Stockfish, each move is classified
+      (Brilliant, Great, Best, Excellent, Good, Book, Inaccuracy, Mistake, Miss, Blunder),
+      both players get an accuracy %, and the games are ranked by how interesting they are.</p>
+
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file" accept=".pgn,text/plain">
+      <div class="dz-inner">
+        <div class="dz-icon">📂</div>
+        <div><strong>Drop a .pgn file here</strong> or click to choose</div>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <label>Depth <input type="number" id="depth" min="6" max="40" value="16"></label>
+      <label>Parallel engines <input type="number" id="workers" min="1" max="64" value="4"></label>
+      <label>Threads / engine <input type="number" id="threads" min="1" max="64" value="1"></label>
+      <label>Hash MB <input type="number" id="hash" min="16" max="8192" value="128"></label>
+    </div>
+    <p class="hint" id="cpu-hint"></p>
+  </div>
+
+  <div class="card" id="collections-card">
+    <h2>Previous uploads</h2>
+    <table class="table" id="collections-table">
+      <thead><tr><th>File</th><th>Games</th><th>Uploaded</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================================================================ GAMES -->
+<section id="view-games" class="view hidden">
+  <div class="card progress-card" id="progress-card">
+    <div class="progress-head">
+      <div>
+        <strong id="progress-title">Analysis</strong>
+        <span class="muted" id="progress-sub"></span>
+      </div>
+      <div class="progress-actions">
+        <button class="btn" id="btn-analyze">Analyse all games</button>
+        <button class="btn danger hidden" id="btn-cancel">Cancel</button>
+      </div>
+    </div>
+    <div class="bar"><div class="bar-fill" id="bar-fill" style="width:0%"></div></div>
+    <div class="progress-meta muted" id="progress-meta"></div>
+    <div class="progress-current muted" id="progress-current"></div>
+  </div>
+
+  <div class="card">
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search player, team, opening…">
+      <select id="filter-tag">
+        <option value="">All games</option>
+        <option value="__analyzed">Analysed only</option>
+        <option value="upset">Upsets</option>
+        <option value="brilliant">Brilliant moves</option>
+        <option value="great-moves">Great moves</option>
+        <option value="comeback">Comebacks</option>
+        <option value="high-accuracy">High accuracy</option>
+        <option value="swings">Wild swings</option>
+        <option value="checkmate">Checkmates</option>
+        <option value="miniature">Miniatures</option>
+        <option value="decisive">Decisive results</option>
+      </select>
+      <select id="sort">
+        <option value="interest">Sort: most interesting</option>
+        <option value="idx">Sort: file order</option>
+        <option value="accuracy">Sort: highest accuracy</option>
+        <option value="upset">Sort: biggest upset</option>
+        <option value="rating">Sort: highest rated</option>
+      </select>
+      <span class="spacer"></span>
+      <a class="btn ghost" id="export-csv" href="#" download>Export CSV</a>
+      <a class="btn ghost" id="export-json" href="#" download>Export JSON</a>
+    </div>
+    <div class="stats muted" id="stats"></div>
+    <div id="games-list" class="games-list"></div>
+  </div>
+</section>
+
+<!-- ================================================================ GAME -->
+<section id="view-game" class="view hidden">
+  <div class="game-layout">
+    <div class="board-col">
+      <button class="btn ghost small" id="btn-back">← Back to games</button>
+      <div class="board-wrap">
+        <div class="evalbar" id="evalbar"><div class="evalbar-white" id="evalbar-white"></div><span class="evalbar-text" id="evalbar-text">0.0</span></div>
+        <div class="board-and-labels">
+          <div class="player-label top" id="label-top"></div>
+          <div class="board" id="board"></div>
+          <div class="player-label bottom" id="label-bottom"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="btn ghost" id="btn-first" title="First">⏮</button>
+        <button class="btn ghost" id="btn-prev" title="Previous (←)">◀</button>
+        <button class="btn ghost" id="btn-next" title="Next (→)">▶</button>
+        <button class="btn ghost" id="btn-last" title="Last">⏭</button>
+        <button class="btn ghost" id="btn-flip" title="Flip board">⇅</button>
+      </div>
+      <div class="move-info card" id="move-info"></div>
+      <div class="card graph-card">
+        <canvas id="graph" height="90"></canvas>
+      </div>
+    </div>
+    <div class="side-col">
+      <div class="card" id="game-header"></div>
+      <div class="card accuracy-card" id="accuracy-card"></div>
+      <div class="card moves-card">
+        <h3>Moves</h3>
+        <div class="movelist" id="movelist"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ SETTINGS -->
+<section id="view-settings" class="view hidden">
+  <div class="card">
+    <h2>Engine</h2>
+    <p class="muted">Path to a UCI engine binary (Stockfish). Auto-detected from <code>../Engines/sf</code> next to the app folder if present.</p>
+    <div class="settings-row">
+      <input type="text" id="engine-path" placeholder="/path/to/stockfish" style="flex:1">
+      <button class="btn" id="btn-save-engine">Save</button>
+    </div>
+    <p class="muted" id="engine-status"></p>
+    <h2>How classification works</h2>
+    <div class="legend">
+      <div><span class="badge brilliant">!!</span> <b>Brilliant</b> – a sound piece sacrifice that is (nearly) the best move, from a position that was not already won.</div>
+      <div><span class="badge great">!</span> <b>Great</b> – the only good move, or the move that punishes an opponent's mistake and swings the game.</div>
+      <div><span class="badge best">★</span> <b>Best</b> – the engine's top choice (0.00 expected points lost).</div>
+      <div><span class="badge excellent">✓</span> <b>Excellent</b> – loses ≤ 0.02 expected points.</div>
+      <div><span class="badge good">✓</span> <b>Good</b> – loses 0.02 – 0.05.</div>
+      <div><span class="badge book">📖</span> <b>Book</b> – a known opening move (Lichess ECO database).</div>
+      <div><span class="badge forced">→</span> <b>Forced</b> – the only legal move.</div>
+      <div><span class="badge inaccuracy">?!</span> <b>Inaccuracy</b> – loses 0.05 – 0.10.</div>
+      <div><span class="badge mistake">?</span> <b>Mistake</b> – loses 0.10 – 0.20.</div>
+      <div><span class="badge miss">✗</span> <b>Miss</b> – the opponent blundered into a lost position and the winning continuation was not found.</div>
+      <div><span class="badge blunder">??</span> <b>Blunder</b> – loses more than 0.20 expected points.</div>
+    </div>
+    <p class="muted">Expected points = win probability derived from the Stockfish centipawn score
+      (Win% = 50 + 50·(2/(1+e<sup>−0.00368·cp</sup>) − 1)). Move accuracy uses the Lichess curve
+      103.1668·e<sup>−0.04354·ΔWin%</sup> − 3.1669; game accuracy is the mean of the volatility-weighted
+      and harmonic means of move accuracies (book and forced moves excluded). Thresholds follow
+      chess.com's published ClassificationV2 table.</p>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
