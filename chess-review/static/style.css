@@ -23,6 +23,8 @@
 
   --light-sq: #ebecd0;
   --dark-sq: #779556;
+
+  --topbar-h: 57px;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -35,7 +37,7 @@ h3 { font-size: 15px; margin: 0 0 8px; color: var(--muted); text-transform: uppe
 .hidden { display: none !important; }
 .spacer { flex: 1; }
 
-.topbar { display: flex; align-items: center; gap: 18px; padding: 10px 20px; background: #1f1d1b; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+.topbar { display: flex; align-items: center; gap: 18px; height: var(--topbar-h); padding: 0 20px; background: #1f1d1b; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
 .brand { font-weight: 700; font-size: 18px; }
 .navbtn { background: none; border: none; color: var(--muted); font-size: 15px; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
 .navbtn.active { color: var(--text); background: var(--panel-2); }
@@ -131,9 +133,32 @@ input[type=number] { width: 110px; }
 /* game view */
 .game-layout { display: grid; grid-template-columns: minmax(360px, 620px) minmax(320px, 1fr); gap: 18px; align-items: start; }
 @media (max-width: 900px) { .game-layout { grid-template-columns: 1fr; } }
-.board-col { display: flex; flex-direction: column; gap: 10px; }
+.board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* The board is the main focus of the game view: pin it under the topbar so it
+     never scrolls out of sight while replaying moves, no matter how long the
+     move list on the right grows or where the page scroll position ends up. */
+  position: sticky;
+  top: calc(var(--topbar-h) + 12px);
+  align-self: start;
+  max-height: calc(100vh - var(--topbar-h) - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
 .board-wrap { display: flex; gap: 10px; align-items: stretch; }
-.board-and-labels { flex: 1; min-width: 0; }
+.board-and-labels {
+  flex: 1;
+  min-width: 0;
+  /* Shrink the board to fit short/laptop-height windows so it (and its controls)
+     stay fully visible without needing to scroll — width sets the height too via
+     the board's aspect-ratio: 1. Falls back to the column's own 620px cap on tall
+     windows, and never shrinks below a usable 220px. */
+  max-width: clamp(220px, calc(100vh - var(--topbar-h) - 420px), 620px);
+  margin: 0 auto;
+}
 .player-label { display: flex; justify-content: space-between; align-items: center; padding: 5px 4px; font-weight: 600; }
 .player-label .elo { color: var(--muted); font-weight: 400; margin-left: 6px; }
 .player-label .clock { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
