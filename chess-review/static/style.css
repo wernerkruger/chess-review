@@ -209,6 +209,11 @@ input[type=number] { width: 110px; }
 .promo-picker button:hover { background: #55524d; }
 .promo-picker svg { width: 100%; height: 100%; }
 
+/* the piece that follows the cursor while dragging (see makeGhost() in app.js) */
+.drag-ghost { position: fixed; pointer-events: none; z-index: 50; filter: drop-shadow(0 6px 10px rgba(0,0,0,.45)); }
+.drag-ghost svg { width: 100%; height: 100%; }
+body.dragging-piece, body.dragging-piece .board.interactive .sq { cursor: grabbing !important; }
+
 .live-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #3b4634; border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
 .live-banner b { color: var(--text); }
 .arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }

@@ -36,6 +36,7 @@
     // ---- right-click drawings (arrows / square highlights); cleared on every position change ----
     annot: { arrows: [], highlights: {} },
     rDrag: null,        // square where a right-button drag started, or null
+    drag: null,         // in-progress left-button piece drag: {from, piece, moved, startX, startY, deselectOnClick} or null
   };
 
   // ------------------------------------------------------------------ utils
@@ -347,6 +348,8 @@
     state.selected = null;
     state.promo = null;
     state.annot = { arrows: [], highlights: {} };
+    state.drag = null;
+    removeGhost();
     renderGameHeader();
     renderMoveList();
     renderAccuracy();
@@ -424,7 +427,7 @@
     else if (e.key === "ArrowRight") { goto(state.ply + 1); e.preventDefault(); }
     else if (e.key === "Home") goto(0);
     else if (e.key === "End") goto(state.detail.analysis.moves.length);
-    else if (e.key === "Escape") { state.selected = null; state.promo = null; renderCurrent(); }
+    else if (e.key === "Escape") { state.selected = null; state.promo = null; state.drag = null; removeGhost(); renderCurrent(); }
   }
   $("#btn-first").onclick = () => goto(0);
   $("#btn-prev").onclick = () => { if (isBranched()) undoLiveMove(); else goto(state.ply - 1); };
@@ -445,6 +448,8 @@
     state.selected = null;
     state.promo = null;
     state.annot = { arrows: [], highlights: {} };
+    state.drag = null;
+    removeGhost();
     const moves = state.detail.analysis.moves;
     ply = Math.max(0, Math.min(moves.length, ply));
     state.ply = ply;
@@ -553,7 +558,10 @@
           sqName === from ? "from" : "", sqName === to ? "to" : "",
           sqName === state.selected ? "selected" : ""].join(" ");
         let inner = "";
-        if (piece) {
+        // while a piece is being dragged, its source square is drawn empty —
+        // the floating drag-ghost (appended to <body>) stands in for it
+        const isBeingDragged = state.drag && state.drag.moved && sqName === state.drag.from;
+        if (piece && !isBeingDragged) {
           inner += `<svg class="piece" viewBox="0 0 45 45">${PIECE_SVG[piece]}</svg>`;
         }
         if (lastMove && lastMove.classification && sqName === to) {
@@ -770,6 +778,57 @@
 
   // ---- mouse interaction: left click/drag to move, right click/drag to draw
   const boardEl = $("#board");
+  const DRAG_THRESHOLD = 4; // px of pointer travel before a mousedown becomes a drag
+  let ghostEl = null;
+
+  function pieceAtSquareFen(fen, sq) {
+    const rows = fen.split(" ")[0].split("/");
+    const [f, r] = [sq.charCodeAt(0) - 97, 8 - +sq[1]];
+    const row = rows[r];
+    let col = 0;
+    for (const ch of row) {
+      if (/\d/.test(ch)) { col += +ch; continue; }
+      if (col === f) return ch;
+      col++;
+    }
+    return null;
+  }
+  // Kept for renderPromoPicker(), which only needs "whose piece is this".
+  function boardPieceIsWhiteFen(fen, sq) {
+    const p = pieceAtSquareFen(fen, sq);
+    return p ? p === p.toUpperCase() : null;
+  }
+  // Pixel coordinates -> algebraic square, honouring the current flip — the
+  // drag counterpart of sqXY(), used to find the drop square on mouseup.
+  function squareFromPoint(clientX, clientY) {
+    const rect = boardEl.getBoundingClientRect();
+    if (!rect.width) return null;
+    const size = rect.width / 8;
+    let f = Math.floor((clientX - rect.left) / size);
+    let r = Math.floor((clientY - rect.top) / size);
+    if (f < 0 || f > 7 || r < 0 || r > 7) return null;
+    if (state.flipped) { f = 7 - f; r = 7 - r; }
+    return String.fromCharCode(97 + f) + (8 - r);
+  }
+  function makeGhost(piece, size) {
+    removeGhost();
+    ghostEl = document.createElement("div");
+    ghostEl.className = "drag-ghost";
+    ghostEl.style.width = ghostEl.style.height = size + "px";
+    ghostEl.innerHTML = `<svg viewBox="0 0 45 45">${PIECE_SVG[piece]}</svg>`;
+    document.body.appendChild(ghostEl);
+    document.body.classList.add("dragging-piece");
+  }
+  function moveGhost(clientX, clientY, size) {
+    if (!ghostEl) return;
+    ghostEl.style.left = (clientX - size / 2) + "px";
+    ghostEl.style.top = (clientY - size / 2) + "px";
+  }
+  function removeGhost() {
+    if (ghostEl) { ghostEl.remove(); ghostEl = null; }
+    document.body.classList.remove("dragging-piece");
+  }
+
   boardEl.addEventListener("contextmenu", (e) => e.preventDefault());
   boardEl.addEventListener("mousedown", (e) => {
     const sqEl = e.target.closest(".sq");
@@ -786,14 +845,44 @@
       // a click on the board (not on the picker itself, which stops propagation
       // via its own handler running first isn't guaranteed — check target)
       if (!e.target.closest(".promo-picker")) { state.promo = null; renderCurrent(); }
+      else if (hadAnnot) renderCurrent();
       return;
     }
     // Render the cleared drawings immediately even when the click itself is a
     // no-op (e.g. clicking an empty square, or a piece that isn't yours to
-    // move) — handleSquareClick only re-renders when it actually changes
-    // the selection or plays a move.
+    // move) — startInteraction only re-renders when it actually changes the
+    // selection or plays a move.
     if (hadAnnot) renderCurrent();
-    handleSquareClick(sq);
+    startInteraction(sq, e);
+  });
+  // The drag itself is tracked on window, not the board, so a fast drag that
+  // outruns the board's edges (or a mouseup just outside it) still resolves.
+  window.addEventListener("mousemove", (e) => {
+    const d = state.drag;
+    if (!d) return;
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+      d.moved = true;
+      d.size = boardEl.getBoundingClientRect().width / 8;
+      makeGhost(d.piece, d.size);
+      renderCurrent(); // pull the piece off the source square now that it's "picked up"
+    }
+    moveGhost(e.clientX, e.clientY, d.size);
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (e.button !== 0 || !state.drag) return;
+    const d = state.drag;
+    state.drag = null;
+    removeGhost();
+    if (!d.moved) {
+      // A plain click (no drag) on the square that was already selected
+      // deselects it, matching ordinary click-to-move behaviour.
+      if (d.deselectOnClick) { state.selected = null; renderCurrent(); }
+      return;
+    }
+    const dropSq = squareFromPoint(e.clientX, e.clientY);
+    if (dropSq && dropSq !== d.from) tryPlayMove(d.from, dropSq);
+    else renderCurrent(); // dropped back on its own square, or off the board: cancel
   });
   boardEl.addEventListener("mouseup", (e) => {
     if (e.button !== 2 || !state.rDrag) return;
@@ -808,43 +897,46 @@
     renderCurrent();
   });
 
-  async function handleSquareClick(sq) {
+  // A mousedown resolves the *click* half of the interaction right away —
+  // selecting a piece, completing a two-click move, re-selecting a different
+  // piece, or deselecting — and, whenever the square held a piece you're
+  // allowed to move, also arms a potential drag (via armDrag) that the
+  // mousemove/mouseup listeners above turn into an actual move if the pointer
+  // travels far enough before release. That's what lets the same mousedown
+  // serve either a click-click move or a click-drag move.
+  async function startInteraction(sq, e) {
     const fen = currentFen();
     const turn = fenTurn(fen);
-    const pieceHere = boardPieceIsWhiteFen(fen, sq);
-    const hasPiece = pieceHere !== null;
+    const piece = pieceAtSquareFen(fen, sq);
+    const isOwnPiece = piece !== null && (piece === piece.toUpperCase()) === (turn === "white");
+
     if (state.selected) {
-      if (sq === state.selected) { state.selected = null; renderCurrent(); return; }
+      if (sq === state.selected) {
+        armDrag(sq, piece, e, /* deselectOnClick */ true);
+        return;
+      }
       const dest = legalMovesFrom(state.selected).find((m) => m.to === sq);
       if (dest) { await tryPlayMove(state.selected, sq); return; }
       // clicking a different one of your own pieces re-selects instead of moving
-      if (hasPiece && pieceHere === (turn === "white")) {
+      if (isOwnPiece) {
         await ensureLive();
         state.selected = sq;
         renderCurrent();
+        armDrag(sq, piece, e, /* deselectOnClick */ false);
         return;
       }
       state.selected = null;
       renderCurrent();
       return;
     }
-    if (!hasPiece) return;
-    if (pieceHere !== (turn === "white")) return; // not this side's piece to move
+    if (!isOwnPiece) return;
     await ensureLive();
     state.selected = sq;
     renderCurrent();
+    armDrag(sq, piece, e, /* deselectOnClick */ false);
   }
-  function boardPieceIsWhiteFen(fen, sq) {
-    const rows = fen.split(" ")[0].split("/");
-    const [f, r] = [sq.charCodeAt(0) - 97, 8 - +sq[1]];
-    const row = rows[r];
-    let col = 0;
-    for (const ch of row) {
-      if (/\d/.test(ch)) { col += +ch; continue; }
-      if (col === f) return ch === ch.toUpperCase();
-      col++;
-    }
-    return null;
+  function armDrag(sq, piece, e, deselectOnClick) {
+    state.drag = { from: sq, piece, moved: false, startX: e.clientX, startY: e.clientY, deselectOnClick };
   }
 
   function renderEvalBar(m) {
