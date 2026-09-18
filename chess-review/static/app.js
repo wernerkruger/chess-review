@@ -128,6 +128,13 @@
     };
   }
 
+  // Uploads are treated as growing PGN databases rather than one-shot
+  // imports: a new file is first "staged" on the server (parsed, but not
+  // yet written to any collection) so we can ask whether it should become
+  // a new database or be merged into an existing one — skipped entirely
+  // when there's nothing yet to merge into.
+  let pendingUpload = null; // { token, filename, n_games } while the modal is up
+
   async function uploadFile(file) {
     const s = readSettings();
     state.depth = s.depth;
@@ -135,13 +142,66 @@
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await api(`/api/upload?depth=${s.depth}`, { method: "POST", body: fd });
+      const res = await api("/api/upload/stage", { method: "POST", body: fd });
       dz.querySelector(".dz-inner").innerHTML = `<div class="dz-icon">📂</div><div><strong>Drop a .pgn file here</strong> or click to choose</div>`;
-      await openCollection(res.collection_id, s.depth);
-      if (res.cached < res.n_games) startAnalysis(s);
+      pendingUpload = { token: res.token, filename: res.filename, n_games: res.n_games };
+      const existing = await api("/api/collections").catch(() => []);
+      if (!existing.length) {
+        await commitUpload("new", res.filename);
+      } else {
+        openUploadModal(existing);
+      }
     } catch (e) {
       dz.querySelector(".dz-inner").innerHTML = `<div class="dz-icon">⚠️</div><div>${esc(e.message)}</div>`;
     }
+  }
+
+  function openUploadModal(existing) {
+    $("#um-filename").textContent = pendingUpload.filename;
+    $("#um-count").textContent = pendingUpload.n_games;
+    $("#um-new-name").value = pendingUpload.filename;
+    $("#um-existing").innerHTML = existing.map((c) => `<option value="${c.id}">${esc(c.name)} (${c.n_games} game${c.n_games === 1 ? "" : "s"})</option>`).join("");
+    $$('input[name="um-mode"]').forEach((r) => { r.checked = r.value === "new"; });
+    $("#upload-modal-backdrop").classList.remove("hidden");
+    $("#um-new-name").focus();
+  }
+  function closeUploadModal(discard) {
+    $("#upload-modal-backdrop").classList.add("hidden");
+    if (discard && pendingUpload) api(`/api/upload/stage/${pendingUpload.token}`, { method: "DELETE" }).catch(() => { });
+    pendingUpload = null;
+  }
+  $("#um-cancel").addEventListener("click", () => closeUploadModal(true));
+  $("#upload-modal-backdrop").addEventListener("mousedown", (e) => { if (e.target.id === "upload-modal-backdrop") closeUploadModal(true); });
+  $("#um-confirm").addEventListener("click", () => {
+    const mode = $$('input[name="um-mode"]').find((r) => r.checked).value;
+    if (mode === "new") commitUpload("new", $("#um-new-name").value.trim() || pendingUpload.filename);
+    else {
+      const sel = $("#um-existing");
+      if (!sel.value) return;
+      commitUpload("append", null, +sel.value);
+    }
+  });
+
+  async function commitUpload(mode, name, collectionId) {
+    if (!pendingUpload) return;
+    const s = readSettings();
+    const body = { token: pendingUpload.token, mode, depth: s.depth };
+    if (mode === "new") body.name = name;
+    else body.collection_id = collectionId;
+    let res;
+    try {
+      res = await api("/api/upload/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
+    $("#upload-modal-backdrop").classList.add("hidden");
+    pendingUpload = null;
+    if (mode === "append" && res.skipped) {
+      alert(`Added ${res.added} new game${res.added === 1 ? "" : "s"} (${res.skipped} already in that database, skipped).`);
+    }
+    await openCollection(res.collection_id, s.depth);
+    if (res.cached < res.n_games) startAnalysis(s);
   }
 
   async function loadCollections() {

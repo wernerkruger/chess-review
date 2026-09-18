@@ -51,6 +51,29 @@
   </div>
 </section>
 
+<!-- ================================================================ UPLOAD: new vs. existing database -->
+<div class="modal-backdrop hidden" id="upload-modal-backdrop">
+  <div class="card modal" id="upload-modal">
+    <h2>Add "<span id="um-filename"></span>"</h2>
+    <p class="muted"><span id="um-count"></span> games found. Add them to an existing database, or start a new one?</p>
+    <label class="modal-option">
+      <input type="radio" name="um-mode" value="new" checked>
+      <span>Create a new database named</span>
+      <input type="text" id="um-new-name" class="modal-input">
+    </label>
+    <label class="modal-option">
+      <input type="radio" name="um-mode" value="append">
+      <span>Add to</span>
+      <select id="um-existing" class="modal-input"></select>
+    </label>
+    <p class="muted" id="um-hint" style="font-size:12px">Games already present in that database (same players, date, round and moves) won't be duplicated.</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="um-cancel">Cancel</button>
+      <button class="btn" id="um-confirm">Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- ================================================================ GAMES -->
 <section id="view-games" class="view hidden">
   <div class="card progress-card" id="progress-card">

@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import io
 import os
+import time
+import uuid
 from typing import Optional
 
 import chess.pgn
@@ -91,6 +93,80 @@ async def upload(file: UploadFile = File(...), depth: int = DEFAULT_DEPTH):
     cid = db.create_collection(file.filename or "upload.pgn", games)
     cached = db.cached_count([g[0] for g in games], depth)
     return {"collection_id": cid, "n_games": len(games), "cached": cached}
+
+
+# Uploads are treated as growing PGN databases: a new file is parsed and held
+# here for a short while (keyed by a random token) so the frontend can ask
+# "add to an existing database, or start a new one?" before anything is
+# actually written to the games table.
+_PENDING_UPLOADS: dict[str, dict] = {}
+_PENDING_TTL_SEC = 30 * 60
+
+
+def _sweep_pending_uploads() -> None:
+    now = time.time()
+    for token in [t for t, p in _PENDING_UPLOADS.items() if p["expires"] < now]:
+        _PENDING_UPLOADS.pop(token, None)
+
+
+@app.post("/api/upload/stage")
+async def upload_stage(file: UploadFile = File(...)):
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    games = _split_pgn(text)
+    if not games:
+        raise HTTPException(400, "No games found in that PGN file.")
+    _sweep_pending_uploads()
+    token = uuid.uuid4().hex
+    filename = file.filename or "upload.pgn"
+    _PENDING_UPLOADS[token] = {"games": games, "filename": filename, "expires": time.time() + _PENDING_TTL_SEC}
+    return {"token": token, "filename": filename, "n_games": len(games)}
+
+
+@app.delete("/api/upload/stage/{token}")
+def upload_discard(token: str):
+    _PENDING_UPLOADS.pop(token, None)
+    return {"ok": True}
+
+
+class UploadCommitIn(BaseModel):
+    token: str
+    mode: str  # "new" | "append"
+    name: Optional[str] = None
+    collection_id: Optional[int] = None
+    depth: int = DEFAULT_DEPTH
+
+
+@app.post("/api/upload/commit")
+def upload_commit(body: UploadCommitIn):
+    _sweep_pending_uploads()
+    pending = _PENDING_UPLOADS.pop(body.token, None)
+    if not pending:
+        raise HTTPException(400, "This upload has expired (or was already used) — please upload the file again.")
+    games = pending["games"]
+    if body.mode == "new":
+        name = (body.name or pending["filename"]).strip() or pending["filename"]
+        cid = db.create_collection(name, games)
+        added, skipped = len(games), 0
+    elif body.mode == "append":
+        if not body.collection_id or not db.get_collection(body.collection_id):
+            raise HTTPException(400, "That database no longer exists.")
+        cid = body.collection_id
+        added, skipped = db.add_games_to_collection(cid, games)
+    else:
+        raise HTTPException(400, "mode must be 'new' or 'append'")
+    all_hashes = [g["hash"] for g in db.collection_games(cid)]
+    cached = db.cached_count(all_hashes, body.depth)
+    return {
+        "collection_id": cid,
+        "added": added,
+        "skipped": skipped,
+        "n_games": len(all_hashes),
+        "cached": cached,
+    }
 
 
 @app.get("/api/collections")

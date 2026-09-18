@@ -209,6 +209,14 @@ input[type=number] { width: 110px; }
 .promo-picker button:hover { background: #55524d; }
 .promo-picker svg { width: 100%; height: 100%; }
 
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 40; padding: 20px; }
+.modal { width: 100%; max-width: 460px; margin: 0; }
+.modal h2 { font-size: 17px; margin: 0 0 6px; }
+.modal-option { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.modal-option input[type=radio] { flex: none; width: 16px; height: 16px; }
+.modal-input { flex: 1; min-width: 160px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
 /* the piece that follows the cursor while dragging (see makeGhost() in app.js) */
 .drag-ghost { position: fixed; pointer-events: none; z-index: 50; filter: drop-shadow(0 6px 10px rgba(0,0,0,.45)); }
 .drag-ghost svg { width: 100%; height: 100%; }

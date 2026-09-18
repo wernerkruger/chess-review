@@ -96,6 +96,30 @@ def create_collection(name: str, games: list[tuple[str, dict, str]]) -> int:
         return cid
 
 
+def add_games_to_collection(cid: int, games: list[tuple[str, dict, str]]) -> tuple[int, int]:
+    """Append games to an existing collection, treating it as a growing PGN
+    database. A game whose hash already exists *in this collection* is
+    skipped, so re-adding a file (or one that overlaps an earlier upload)
+    doesn't create duplicates. Returns (added, skipped)."""
+    with _lock:
+        c = con()
+        existing = {r[0] for r in c.execute("SELECT hash FROM games WHERE collection_id=?", (cid,)).fetchall()}
+        next_idx = c.execute("SELECT COALESCE(MAX(idx), -1) + 1 FROM games WHERE collection_id=?", (cid,)).fetchone()[0]
+        to_add = [(h, hd, pgn) for (h, hd, pgn) in games if h not in existing]
+        skipped = len(games) - len(to_add)
+        if to_add:
+            c.executemany(
+                "INSERT INTO games(collection_id, idx, hash, headers, pgn) VALUES (?,?,?,?,?)",
+                [(cid, next_idx + i, h, json.dumps(hd), pgn) for i, (h, hd, pgn) in enumerate(to_add)],
+            )
+            c.execute(
+                "UPDATE collections SET n_games = n_games + ?, uploaded_at = ? WHERE id=?",
+                (len(to_add), time.time(), cid),
+            )
+            c.commit()
+        return len(to_add), skipped
+
+
 def list_collections() -> list[dict]:
     with _lock:
         rows = con().execute("SELECT * FROM collections ORDER BY id DESC").fetchall()
