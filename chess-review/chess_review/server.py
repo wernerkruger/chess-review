@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db
+from . import db, live
 from .engine import engine_name, find_engine, set_engine_path
 from .jobs import manager
 
@@ -104,6 +104,59 @@ def delete_collection(cid: int):
         raise HTTPException(404)
     db.delete_collection(cid)
     return {"ok": True}
+
+
+class RenameIn(BaseModel):
+    name: str
+
+
+@app.patch("/api/collections/{cid}")
+def rename_collection(cid: int, body: RenameIn):
+    if not db.get_collection(cid):
+        raise HTTPException(404)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Name can't be empty.")
+    db.rename_collection(cid, name)
+    return db.get_collection(cid)
+
+
+# ------------------------------------------------------------------ live analysis board
+#
+# Lets the game viewer's "analysis board" branch off the reviewed game: you play
+# your own moves and the engine evaluates the resulting position live. Distinct
+# from the /jobs review pipeline — this is synchronous, per-request, and never
+# touches the database.
+
+class BoardStateIn(BaseModel):
+    fen: str
+
+
+class BoardMoveIn(BaseModel):
+    fen: str
+    uci: str
+    depth: Optional[int] = None
+
+
+@app.post("/api/board/state")
+def board_state(body: BoardStateIn):
+    try:
+        return live.get_state(body.fen)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/board/move")
+def board_move(body: BoardMoveIn):
+    try:
+        return live.make_move(body.fen, body.uci, body.depth or DEFAULT_DEPTH)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.on_event("shutdown")
+def _shutdown_live_engine():
+    live.close_engine()
 
 
 # ------------------------------------------------------------------ jobs

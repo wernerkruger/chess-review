@@ -29,6 +29,13 @@
     detail: null,
     ply: 0,
     flipped: false,
+    // ---- analysis board (play-your-own-moves) ----
+    live: null,        // { baseFen, basePly, base: boardStatus, history: [boardStatus,...] } or null
+    selected: null,     // currently selected square ("e4") while picking a move, or null
+    promo: null,        // pending promotion choice {from,to} or null
+    // ---- right-click drawings (arrows / square highlights); cleared on every position change ----
+    annot: { arrows: [], highlights: {} },
+    rDrag: null,        // square where a right-button drag started, or null
   };
 
   // ------------------------------------------------------------------ utils
@@ -143,12 +150,19 @@
     for (const c of rows) {
       const tr = document.createElement("tr");
       tr.innerHTML = `<td>${esc(c.name)}</td><td>${c.n_games}</td><td class="muted">${new Date(c.uploaded_at * 1000).toLocaleString()}</td>
-        <td style="text-align:right"><button class="btn small" data-open="${c.id}">Open</button> <button class="btn ghost small" data-del="${c.id}">Delete</button></td>`;
+        <td style="text-align:right"><button class="btn small" data-open="${c.id}">Open</button> <button class="btn ghost small" data-ren="${c.id}" data-name="${esc(c.name)}">Rename</button> <button class="btn ghost small" data-del="${c.id}">Delete</button></td>`;
       tb.appendChild(tr);
     }
     tb.onclick = async (e) => {
-      const open = e.target.dataset.open, del = e.target.dataset.del;
+      const open = e.target.dataset.open, del = e.target.dataset.del, ren = e.target.dataset.ren;
       if (open) { openCollection(+open, readSettings().depth); }
+      if (ren) {
+        const next = prompt("Rename this upload to:", e.target.dataset.name);
+        if (next && next.trim() && next.trim() !== e.target.dataset.name) {
+          await api(`/api/collections/${ren}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: next.trim() }) });
+          loadCollections();
+        }
+      }
       if (del && confirm("Delete this upload? (Analysis cache is kept.)")) { await api(`/api/collections/${del}`, { method: "DELETE" }); loadCollections(); }
     };
   }
@@ -329,6 +343,10 @@
     state.detail = d;
     state.ply = 0;
     state.flipped = false;
+    state.live = null;
+    state.selected = null;
+    state.promo = null;
+    state.annot = { arrows: [], highlights: {} };
     renderGameHeader();
     renderMoveList();
     renderAccuracy();
@@ -394,20 +412,39 @@
   }
 
   function onKey(e) {
+    if (e.key === "f") { flip(); return; }
+    if (e.key === "r" || e.key === "R") { if (isBranched()) returnToGame(); return; }
+    if (isBranched()) {
+      // While you've played your own move(s), arrow keys undo them one at a
+      // time instead of navigating the reviewed game out from under you.
+      if (e.key === "ArrowLeft") { e.preventDefault(); undoLiveMove(); }
+      return;
+    }
     if (e.key === "ArrowLeft") { goto(state.ply - 1); e.preventDefault(); }
     else if (e.key === "ArrowRight") { goto(state.ply + 1); e.preventDefault(); }
     else if (e.key === "Home") goto(0);
     else if (e.key === "End") goto(state.detail.analysis.moves.length);
-    else if (e.key === "f") flip();
+    else if (e.key === "Escape") { state.selected = null; state.promo = null; renderCurrent(); }
   }
   $("#btn-first").onclick = () => goto(0);
-  $("#btn-prev").onclick = () => goto(state.ply - 1);
-  $("#btn-next").onclick = () => goto(state.ply + 1);
+  $("#btn-prev").onclick = () => { if (isBranched()) undoLiveMove(); else goto(state.ply - 1); };
+  $("#btn-next").onclick = () => { if (!isBranched()) goto(state.ply + 1); };
   $("#btn-last").onclick = () => goto(state.detail.analysis.moves.length);
   $("#btn-flip").onclick = () => flip();
-  function flip() { state.flipped = !state.flipped; goto(state.ply); }
+  $("#btn-live-return").onclick = () => returnToGame();
+  function flip() {
+    state.flipped = !state.flipped;
+    renderCurrent();
+  }
 
+  // A move on the move list, or Home/End, always returns to the reviewed
+  // game — clicking a move is one of the two documented ways back out of
+  // analysis mode (the other being the R key / Return button).
   function goto(ply) {
+    state.live = null;
+    state.selected = null;
+    state.promo = null;
+    state.annot = { arrows: [], highlights: {} };
     const moves = state.detail.analysis.moves;
     ply = Math.max(0, Math.min(moves.length, ply));
     state.ply = ply;
@@ -422,6 +459,31 @@
     const act = $("#movelist .mv.active");
     if (act && act.scrollIntoView) act.scrollIntoView({ block: "nearest" });
     drawGraph();
+    $("#live-banner").classList.add("hidden");
+  }
+
+  // Re-render whatever is currently on screen — the reviewed ply (including
+  // while merely having a piece selected to peek at its legal squares), or a
+  // branched analysis position — without changing position. Used after
+  // flipping the board, selecting/deselecting a square, playing or undoing a
+  // custom move, or updating drawings.
+  function renderCurrent() {
+    renderBoard(currentFen(), currentLastMove(), null);
+    renderLabels(state.ply);
+    if (isBranched()) {
+      renderEvalBar(liveNow().eval || null);
+      renderLiveMoveInfo();
+      $$("#movelist .mv").forEach((el) => el.classList.remove("active"));
+      $("#live-banner").classList.remove("hidden");
+    } else {
+      const moves = state.detail.analysis.moves;
+      const m = state.ply > 0 ? moves[state.ply - 1] : null;
+      const next = state.ply < moves.length ? moves[state.ply] : null;
+      renderEvalBar(m);
+      renderMoveInfo(m, next);
+      $$("#movelist .mv").forEach((el) => el.classList.toggle("active", +el.dataset.ply === state.ply));
+      $("#live-banner").classList.add("hidden");
+    }
   }
 
   function renderLabels(ply) {
@@ -476,39 +538,54 @@
   function renderBoard(fen, lastMove, nextMove) {
     const board = parseFen(fen);
     const el = $("#board");
+    el.classList.toggle("interactive", true);
     let html = "";
     const from = lastMove ? lastMove.uci.slice(0, 2) : null, to = lastMove ? lastMove.uci.slice(2, 4) : null;
+    const destMoves = state.selected ? legalMovesFrom(state.selected) : [];
+    const destSquares = new Set(destMoves.map((m) => m.to));
     for (let r = 0; r < 8; r++) {
       for (let f = 0; f < 8; f++) {
         const rr = state.flipped ? 7 - r : r, ff = state.flipped ? 7 - f : f;
         const sqName = String.fromCharCode(97 + ff) + (8 - rr);
         const piece = board[rr][ff];
         const light = (rr + ff) % 2 === 0;
-        const cls = ["sq", light ? "light" : "dark", sqName === from ? "from" : "", sqName === to ? "to" : ""].join(" ");
+        const cls = ["sq", light ? "light" : "dark",
+          sqName === from ? "from" : "", sqName === to ? "to" : "",
+          sqName === state.selected ? "selected" : ""].join(" ");
         let inner = "";
         if (piece) {
           inner += `<svg class="piece" viewBox="0 0 45 45">${PIECE_SVG[piece]}</svg>`;
         }
-        if (lastMove && sqName === to) {
+        if (lastMove && lastMove.classification && sqName === to) {
           const meta = CLASS_META[lastMove.classification];
           inner += `<span class="mark" style="background:${meta.color}">${meta.sym}</span>`;
         }
+        if (destSquares.has(sqName)) inner += `<span class="dest-dot${piece ? " capture" : ""}"></span>`;
         if (f === 7) inner += `<span class="coord rank">${8 - rr}</span>`;
         if (r === 7) inner += `<span class="coord file">${String.fromCharCode(97 + ff)}</span>`;
-        html += `<div class="${cls}">${inner}</div>`;
+        html += `<div class="${cls}" data-sq="${sqName}">${inner}</div>`;
       }
     }
-    // arrows: best move in the position that was on the board before `lastMove` (shown when the move was not best)
     let arrows = "";
-    if (lastMove && lastMove.best_uci && lastMove.best_uci !== lastMove.uci && !["book", "forced", "best"].includes(lastMove.classification)) {
-      // draw on the *previous* position would be ideal; we show it on the current board as a hint of what was best
-      arrows += arrow(lastMove.best_uci, "rgba(150,188,75,.85)");
+    // best move in the position that was on the board before `lastMove` (shown when the reviewed move was not best)
+    if (lastMove && lastMove.classification && lastMove.best_uci && lastMove.best_uci !== lastMove.uci
+      && !["book", "forced", "best"].includes(lastMove.classification)) {
+      arrows += arrow(lastMove.best_uci.slice(0, 2), lastMove.best_uci.slice(2, 4), "rgba(150,188,75,.85)");
     }
+    // engine's suggested continuation from your own analysis moves
+    if (state.live && isBranched()) {
+      const cur = liveNow();
+      if (cur && cur.eval && cur.eval.best_uci && !cur.game_over) {
+        arrows += arrow(cur.eval.best_uci.slice(0, 2), cur.eval.best_uci.slice(2, 4), "rgba(66,133,244,.85)");
+      }
+    }
+    arrows += annotationsSVG();
     html += `<svg class="arrows" viewBox="0 0 8 8">${arrows}</svg>`;
     el.innerHTML = html;
+    renderPromoPicker();
   }
-  function arrow(uci, color) {
-    const [fx, fy] = sqXY(uci.slice(0, 2)), [tx, ty] = sqXY(uci.slice(2, 4));
+  function arrow(fromSq, toSq, color) {
+    const [fx, fy] = sqXY(fromSq), [tx, ty] = sqXY(toSq);
     const x1 = fx + .5, y1 = fy + .5, x2 = tx + .5, y2 = ty + .5;
     const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
     if (!len) return "";
@@ -516,6 +593,258 @@
     const hx = x2 - ux * .28, hy = y2 - uy * .28;
     return `<line x1="${x1}" y1="${y1}" x2="${hx}" y2="${hy}" stroke="${color}" stroke-width=".16" stroke-linecap="round"/>
       <polygon points="${x2},${y2} ${hx - uy * .18},${hy + ux * .18} ${hx + uy * .18},${hy - ux * .18}" fill="${color}"/>`;
+  }
+
+  // ------------------------------------------------------------------ right-click drawings
+  const HILITE_FILL = { green: "rgba(21,145,33,.55)", red: "rgba(210,45,45,.6)", blue: "rgba(30,110,220,.55)", yellow: "rgba(230,180,20,.6)" };
+  const ARROW_STROKE = { green: "rgba(21,150,30,.9)", red: "rgba(220,40,40,.9)", blue: "rgba(30,110,220,.9)", yellow: "rgba(230,180,20,.95)" };
+  const annotColor = (e) => e.altKey ? "blue" : (e.ctrlKey || e.metaKey) ? "yellow" : e.shiftKey ? "red" : "green";
+
+  function annotationsSVG() {
+    let rects = "", arrows = "";
+    for (const sq in state.annot.highlights) {
+      const [x, y] = sqXY(sq);
+      rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${HILITE_FILL[state.annot.highlights[sq]]}"/>`;
+    }
+    for (const a of state.annot.arrows) arrows += arrow(a.from, a.to, ARROW_STROKE[a.color]);
+    return rects + arrows;
+  }
+  function clearAnnotations() { state.annot = { arrows: [], highlights: {} }; }
+  function toggleHighlight(sq, color) {
+    if (state.annot.highlights[sq] === color) delete state.annot.highlights[sq];
+    else state.annot.highlights[sq] = color;
+  }
+  function toggleArrow(from, to, color) {
+    const i = state.annot.arrows.findIndex((a) => a.from === from && a.to === to);
+    if (i === -1) state.annot.arrows.push({ from, to, color });
+    else if (state.annot.arrows[i].color === color) state.annot.arrows.splice(i, 1);
+    else state.annot.arrows[i].color = color;
+  }
+
+  // ------------------------------------------------------------------ analysis board (play your own moves)
+  //
+  // state.live holds { baseFen, basePly, base: boardStatus, history: [boardStatus,...] }.
+  // `base` is the position's status (legal moves, turn, check, etc.) fetched once
+  // when you first touch a piece; each played move appends the /api/board/move
+  // response (which already carries the *next* position's status + engine eval,
+  // so undo just pops the array — no re-fetching needed).
+  const fenTurn = (fen) => (fen.split(" ")[1] === "w" ? "white" : "black");
+
+  function currentFen() {
+    if (isBranched()) return liveNow().fen;
+    const moves = state.detail.analysis.moves;
+    return state.ply > 0 ? moves[state.ply - 1].fen_after : moves[0].fen_before;
+  }
+  function currentLastMove() {
+    if (isBranched()) {
+      const cur = liveNow();
+      return cur.uci ? { uci: cur.uci } : null;
+    }
+    const moves = state.detail.analysis.moves;
+    return state.ply > 0 ? moves[state.ply - 1] : null;
+  }
+  // "Branched" = you've actually played at least one move of your own (as
+  // opposed to merely having clicked a piece to peek at its legal squares).
+  function isBranched() { return !!(state.live && state.live.history.length > 0); }
+  function liveNow() {
+    const L = state.live;
+    if (!L) return null;
+    return L.history.length ? L.history[L.history.length - 1] : L.base;
+  }
+  function legalMovesFrom(sq) {
+    const cur = state.live ? liveNow() : null;
+    const legal = cur ? cur.legal_moves : null;
+    if (!legal) return [];
+    return legal.filter((m) => m.from === sq);
+  }
+
+  async function ensureLive() {
+    if (state.live) return state.live;
+    const moves = state.detail.analysis.moves;
+    const ply = state.ply;
+    const fen = ply > 0 ? moves[ply - 1].fen_after : moves[0].fen_before;
+    const base = await api("/api/board/state", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fen }),
+    });
+    state.live = { baseFen: fen, basePly: ply, base, history: [] };
+    return state.live;
+  }
+
+  async function tryPlayMove(from, to, promotion) {
+    await ensureLive();
+    const cur = liveNow();
+    let uci = from + to + (promotion ? promotion.toLowerCase() : "");
+    // disambiguate promotions: if exactly one legal move matches from/to and no
+    // promotion piece was given, use it as-is (covers the non-promotion case).
+    const candidates = cur.legal_moves.filter((m) => m.from === from && m.to === to);
+    if (!promotion && candidates.length > 1 && candidates.some((m) => m.promotion)) {
+      state.promo = { from, to };
+      state.selected = from;
+      renderCurrent();
+      return;
+    }
+    if (!candidates.some((m) => m.uci === uci)) return; // not actually legal; ignore
+    state.selected = null;
+    state.promo = null;
+    let res;
+    try {
+      res = await api("/api/board/move", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fen: cur.fen, uci, depth: Math.min(state.depth || 16, 18) }),
+      });
+    } catch (err) {
+      renderCurrent();
+      return;
+    }
+    clearAnnotations();
+    state.live.history.push(res);
+    renderCurrent();
+  }
+
+  function undoLiveMove() {
+    if (!state.live || !state.live.history.length) return;
+    state.selected = null;
+    state.promo = null;
+    clearAnnotations();
+    state.live.history.pop();
+    renderCurrent();
+  }
+
+  function returnToGame() {
+    if (!state.live) return;
+    goto(state.live.basePly);
+  }
+
+  function formatEval(ev) {
+    if (!ev) return "";
+    if (ev.mate_after !== null && ev.mate_after !== undefined) return ev.mate_after === 0 ? "checkmate" : `mate in ${Math.abs(ev.mate_after)}`;
+    const cp = ev.eval_white / 100;
+    return `${cp >= 0 ? "+" : ""}${cp.toFixed(1)}`;
+  }
+
+  // Only ever called while isBranched() is true (see renderCurrent()).
+  function renderLiveMoveInfo() {
+    const el = $("#move-info");
+    const cur = liveNow();
+    let status = "";
+    if (cur.game_over) {
+      status = cur.result === "checkmate" ? `Checkmate — ${cur.turn === "white" ? "Black" : "White"} wins.`
+        : cur.result ? `Draw (${cur.result.replace(/_/g, " ")}).` : "Game over.";
+    } else if (cur.in_check) {
+      status = `${cur.turn === "white" ? "White" : "Black"} is in check.`;
+    }
+    const evalTxt = cur.eval ? `Eval ${formatEval(cur.eval)}` : "";
+    const hint = !cur.game_over && cur.eval && cur.eval.best_san ? `Engine suggests <b>${esc(cur.eval.best_san)}</b>.` : "";
+    el.innerHTML = `<div class="big">🔍 ${esc(cur.san)} <span class="muted" style="font-size:13px;font-weight:500">${esc(evalTxt)}</span></div>
+      <div><div class="explain">${status ? `<b>${esc(status)}</b> ` : ""}${hint}</div></div>`;
+  }
+
+  // ---- promotion picker: a tiny floating menu of Q/R/B/N over the target square
+  function renderPromoPicker() {
+    $$(".promo-picker").forEach((el) => el.remove());
+    if (!state.promo) return;
+    const sqEl = $(`.sq[data-sq="${state.promo.to}"]`);
+    const boardEl = $("#board");
+    if (!sqEl || !boardEl) return;
+    const pieceIsWhite = boardPieceIsWhiteFen(liveNow().fen, state.promo.from);
+    const pieces = pieceIsWhite ? ["Q", "R", "B", "N"] : ["q", "r", "b", "n"];
+    const picker = document.createElement("div");
+    picker.className = "promo-picker";
+    const rect = sqEl.getBoundingClientRect(), boardRect = boardEl.getBoundingClientRect();
+    // stack toward the board's centre so the menu never runs off the top/bottom edge
+    const toRank = +state.promo.to[1];
+    const stacksUp = (toRank === 1) !== state.flipped;
+    picker.style.setProperty("--sq", rect.width + "px");
+    picker.style.left = (rect.left - boardRect.left) + "px";
+    picker.style.top = stacksUp ? "auto" : (rect.top - boardRect.top) + "px";
+    picker.style.bottom = stacksUp ? (boardRect.bottom - rect.bottom) + "px" : "auto";
+    picker.innerHTML = pieces.map((p) => `<button data-promo="${p}"><svg viewBox="0 0 45 45">${PIECE_SVG[p]}</svg></button>`).join("");
+    boardEl.appendChild(picker);
+    picker.onclick = (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const { from, to } = state.promo;
+      tryPlayMove(from, to, btn.dataset.promo);
+    };
+  }
+
+  // ---- mouse interaction: left click/drag to move, right click/drag to draw
+  const boardEl = $("#board");
+  boardEl.addEventListener("contextmenu", (e) => e.preventDefault());
+  boardEl.addEventListener("mousedown", (e) => {
+    const sqEl = e.target.closest(".sq");
+    if (!sqEl) return;
+    const sq = sqEl.dataset.sq;
+    if (e.button === 2) {
+      state.rDrag = sq;
+      return;
+    }
+    if (e.button !== 0) return;
+    const hadAnnot = state.annot.arrows.length > 0 || Object.keys(state.annot.highlights).length > 0;
+    if (hadAnnot) clearAnnotations();
+    if (state.promo) {
+      // a click on the board (not on the picker itself, which stops propagation
+      // via its own handler running first isn't guaranteed — check target)
+      if (!e.target.closest(".promo-picker")) { state.promo = null; renderCurrent(); }
+      return;
+    }
+    // Render the cleared drawings immediately even when the click itself is a
+    // no-op (e.g. clicking an empty square, or a piece that isn't yours to
+    // move) — handleSquareClick only re-renders when it actually changes
+    // the selection or plays a move.
+    if (hadAnnot) renderCurrent();
+    handleSquareClick(sq);
+  });
+  boardEl.addEventListener("mouseup", (e) => {
+    if (e.button !== 2 || !state.rDrag) return;
+    const sqEl = e.target.closest(".sq");
+    const sq = sqEl ? sqEl.dataset.sq : null;
+    const start = state.rDrag;
+    state.rDrag = null;
+    if (!sq) return;
+    const color = annotColor(e);
+    if (sq === start) toggleHighlight(sq, color);
+    else toggleArrow(start, sq, color);
+    renderCurrent();
+  });
+
+  async function handleSquareClick(sq) {
+    const fen = currentFen();
+    const turn = fenTurn(fen);
+    const pieceHere = boardPieceIsWhiteFen(fen, sq);
+    const hasPiece = pieceHere !== null;
+    if (state.selected) {
+      if (sq === state.selected) { state.selected = null; renderCurrent(); return; }
+      const dest = legalMovesFrom(state.selected).find((m) => m.to === sq);
+      if (dest) { await tryPlayMove(state.selected, sq); return; }
+      // clicking a different one of your own pieces re-selects instead of moving
+      if (hasPiece && pieceHere === (turn === "white")) {
+        await ensureLive();
+        state.selected = sq;
+        renderCurrent();
+        return;
+      }
+      state.selected = null;
+      renderCurrent();
+      return;
+    }
+    if (!hasPiece) return;
+    if (pieceHere !== (turn === "white")) return; // not this side's piece to move
+    await ensureLive();
+    state.selected = sq;
+    renderCurrent();
+  }
+  function boardPieceIsWhiteFen(fen, sq) {
+    const rows = fen.split(" ")[0].split("/");
+    const [f, r] = [sq.charCodeAt(0) - 97, 8 - +sq[1]];
+    const row = rows[r];
+    let col = 0;
+    for (const ch of row) {
+      if (/\d/.test(ch)) { col += +ch; continue; }
+      if (col === f) return ch === ch.toUpperCase();
+      col++;
+    }
+    return null;
   }
 
   function renderEvalBar(m) {

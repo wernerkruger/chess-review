@@ -116,6 +116,13 @@ def delete_collection(cid: int) -> None:
         c.commit()
 
 
+def rename_collection(cid: int, name: str) -> None:
+    with _lock:
+        c = con()
+        c.execute("UPDATE collections SET name=? WHERE id=?", (name, cid))
+        c.commit()
+
+
 def collection_games(cid: int) -> list[dict]:
     with _lock:
         rows = con().execute(
